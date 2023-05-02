@@ -2,6 +2,7 @@ import time
 import board
 import serial
 import busio
+import os
 import threading
 import adafruit_ads1x15.ads1115 as ADS
 import RPi.GPIO as GPIO
@@ -10,6 +11,13 @@ import requests
 from adafruit_ads1x15.analog_in import AnalogIn
 
 i2c = busio.I2C(board.SCL, board.SDA)
+ads = ADS.ADS1115(i2c)
+chan_0 = AnalogIn(ads, ADS.P0)
+chan_1 = AnalogIn(ads, ADS.P1)
+
+# Define pins
+water_pin = 18
+pump_pin = 17
 
 GPIO.setwarnings(False)  # Disable warnings from GPIO
 GPIO.setmode(GPIO.BCM)
@@ -22,34 +30,32 @@ text_message = ''
 power_key = 6
 rec_buff = ''
 
+first_temp_check = True
+first_moist_check = True
 eco_mode = False
-
-# Define pins
-water_pin = 14
-pump_pin = 17
-temp_pin = 4
 
 # Define the hydration and temperature threshholds for the different plant types
 dry = [30, 45]
-medium = [40, 70]
-wet = [40, 80]
+medium = [40, 80]
+wet = [40, 90]
 
 # Define the minimum the and maximum delay between watering function activations
 min_delay = 1800  # 30 minutes
 max_delay = 604800  # 7 days
-# max_delay = 86400  # 24 hours
 
 # ThingSpeak API parameters
 WRITE_API_KEY = "3F0UCN02XP8HTKQP"
 BASE_URL = "https://api.thingspeak.com/update?api_key={}".format(WRITE_API_KEY)
 
 command_lut = ['eco_mode', 'send_water', 'quit', 'help_me', 'set_plant_dry', 'set_plant_medium', 'set_plant_wet',
-               'set_pot_small', 'set_pot_big', 'get_water_level', 'get_hydration', 'get_temp', 'get_data']
+               'set_pot_small', 'set_pot_big', 'get_water_level', 'get_hydration', 'get_temp', 'get_data',
+               'I love you, Raspi']
 
 
 def read_water_level():
     # Read the water level from the sensor
-    if GPIO.input(water_pin) == GPIO.HIGH:
+    # When the sensor is in the water - the reading is 0, when there is no water the reading is 1
+    if GPIO.input(water_pin) == 0:
         water_level = 1
     else:
         water_level = 0
@@ -62,34 +68,50 @@ def num_to_range(num, inMin, inMax, outMin,
 
 
 def read_temp():
-    # Read the raw data
-    # raw_value = channel.value
-    # Convert the raw value to temperature in Clesius
-    # temperature_c = convert_to_temperature(raw_value)
-    # Print the value
-    # print(f"Temperature: {temperature_c:.2f} C")
-    return 0
+    sample = 0
+    sample_count = 0
+    global first_temp_check
+
+    while sample_count <= 10:
+        sample += chan_1.value
+        sample_count += 1
+
+    sample /= 10
+
+    temp_a = sample
+    temp_v = temp_a * .00005
+    temp_c = round((temp_v * 220), 1)
+    temp_f = round((temp_c * 1.8 + 32), 1)
+
+    if first_temp_check is True:
+        first_temp_check = False
+        temp_c = temp_c / 1.75
+        temp_f = temp_f / 1.45
+
+    print(str(temp_c) + ' ' + str(temp_f))
+    return temp_c, temp_f
 
 
 def water_plant(time_to_water):
     if read_water_level() == 1:
-        GPIO.output(pump_pin, GPIO.HIGH)
+        GPIO.setup(pump_pin, GPIO.LOW)
         time.sleep(time_to_water)
-        GPIO.output(pump_pin, GPIO.LOW)
+        GPIO.setup(pump_pin, GPIO.HIGH)
     else:
         send_error(3)
 
 
 def read_humidity():
     avg_hydro = 0
-    t_end = time.time() + 10
-    while time.time() < t_end:
-        sensor_value = chan.value
+    hydro_samples = 0
+    while hydro_samples != 10:
+        sensor_value = chan_0.value
         avg_hydro += sensor_value
-        time.sleep(1)
+        hydro_samples += 1
     avg_hydro = avg_hydro / 10
     # 22000 is dry (air) and 13000 is water
-    avg_hydro = num_to_range(avg_hydro, 22000, 13000, 0, 100)
+    avg_hydro = num_to_range(avg_hydro, 22000, 12000, 0, 100)
+    print(avg_hydro)
     return avg_hydro
 
 
@@ -104,7 +126,8 @@ def get_hydration():
 
 
 def get_temp():
-    SendShortMessage(phone_number, 'Current temperature level - ' + str(read_temp()))
+    temp_c, temp_f = read_temp()
+    SendShortMessage(phone_number, 'Current temperature level - ' + str(temp_c) + 'C*, ' + str(temp_f) + 'F')
 
 
 def get_water_level():
@@ -115,52 +138,58 @@ def get_water_level():
 
 
 def schedule_watering():
-    # Read the current hydration and temperature levels from the sensors
-    delay = 0
-    hydration_level = read_humidity()
+    while True:
+        # Read the current hydration and temperature levels from the sensors
+        delay = 0
+        hydration_level = read_humidity()
 
-    file = open('plant_type.txt', 'r')
-    plant_type = file.read()
-    file.close()
+        if not os.path.exists('plant_type.txt'):
+            print("No plant type specified, assuming medium plant type")
+            set_plant_medium()
+        file = open('plant_type.txt', 'r')
+        plant_type = file.read()
+        file.close()
 
-    file = open('pot_type.txt', 'r')
-    pot_size = file.read()
-    file.close()
+        if not os.path.exists('pot_type.txt'):
+            print("No pot type specified, assuming medium plant type")
+            set_pot_small()
+        file = open('pot_type.txt', 'r')
+        pot_size = file.read()
+        file.close()
 
-    if plant_type == '':
-        SendShortMessage(phone_number, "No plant type specified, assuming medium plant type")
-        set_plant_medium()
-    if pot_size == '':
-        SendShortMessage(phone_number, "No pot size specified, assuming small pot size")
-        set_pot_small()
+        if plant_type == '':
+            # SendShortMessage(phone_number, "No plant type specified, assuming medium plant type")
+            set_plant_medium()
+        if pot_size == '':
+            # SendShortMessage(phone_number, "No pot size specified, assuming small pot size")
+            set_pot_small()
 
-    # Calculate the recommended delay based on the current plant type and temperature level
-    if plant_type == "dry":
-        if hydration_level < dry[0]:
-            water_plant(5)
-        delay = max_delay
-    elif plant_type == "medium":
-        if hydration_level < medium[0] and pot_size == 'small':
-            water_plant(4)  # 100 ml
-            time.sleep(3600)  # Wait for the water to be drained by soil
-        elif hydration_level < medium[0] and pot_size == 'big':
-            water_plant(6)  # 150 ml
-            time.sleep(3600)
-        delay = round((medium[1] - hydration_level) * 3600)  # 1 hour per 1% of missing hydration
-    elif plant_type == "wet":
-        if hydration_level < wet[0] and pot_size == 'small':
-            water_plant(4)  # 100 ml
-            time.sleep(3600)
-        elif hydration_level < wet[0] and pot_size == 'big':
-            water_plant(8)  # 200 ml
-            time.sleep(3600)
-        delay = round((wet[1] - hydration_level) * 1800)  # 30 minutes per 1% of missing hydration
+        # Calculate the recommended delay based on the current plant type and temperature level
+        if plant_type == "dry":
+            if hydration_level < dry[0]:
+                water_plant(4)  # 100 mk
+            delay = max_delay
+        elif plant_type == "medium":
+            if hydration_level < medium[0] and pot_size == 'small':
+                water_plant(4)  # 100 ml
+                time.sleep(3600)  # Wait for the water to be drained by the soil
+            elif hydration_level < medium[0] and pot_size == 'big':
+                water_plant(6)  # 150 ml
+                time.sleep(3600)
+            delay = round((medium[1] - hydration_level) * 3600)  # 1 hour per 1% of missing hydration
+        elif plant_type == "wet":
+            if hydration_level < wet[0] and pot_size == 'small':
+                water_plant(4)  # 100 ml
+                time.sleep(3600)
+            elif hydration_level < wet[0] and pot_size == 'big':
+                water_plant(8)  # 200 ml
+                time.sleep(3600)
+            delay = round((wet[1] - hydration_level) * 1800)  # 30 minutes per 1% of missing hydration
 
-    # Schedule the next watering function activation and return the recommended delay
-    next_activation_time = time.monotonic() + delay
-    if time.monotonic() <= next_activation_time:
-        time.sleep(60)
-    schedule_watering()
+        # Schedule the next watering function activation and return the recommended delay
+        next_activation_time = time.time() + delay
+        while time.time() <= next_activation_time:
+            time.sleep(60)
 
 
 def send_at(command, back, timeout):
@@ -174,7 +203,7 @@ def send_at(command, back, timeout):
     if rec_buff != '':
         print(rec_buff.decode())
         message = rec_buff.decode('utf-8').split('\r\n')[2]  # Split the SMS code into specific command
-        if parse_command(message): print(rec_buff.decode), time.sleep(3),
+        if parse_command(message): print(rec_buff.decode), time.sleep(10),
         # if 'Raspi' in rec_buff.decode(): print(rec_buff.decode), time.sleep(3),
         if back not in rec_buff.decode(): print(command + ' back:\t' + rec_buff.decode())
         return 0
@@ -197,17 +226,11 @@ def ReceiveShortMessage():
 
             if 1 == answer:
                 answer = 0
-            if 'red' in rec_buff:
-                answer = 1
-                print('Turning LEDS onto RED')
             else:
                 print('No New text')
-                return False
-            return True
         else:
             time.sleep(10)
             power_down_hat(power_key)
-            break
 
 
 def SendShortMessage(phone_number, text_message):
@@ -230,15 +253,18 @@ def SendShortMessage(phone_number, text_message):
 
 def parse_command(command):
     i = 0
-    # Only accepts correct syntax 
-    try:
-        i = command_lut.index(command)
-        print(command_lut[i])
-        execute_function(i)
-        return True
-    except:
-        send_error('Incorrect command syntax or non-existent command')
-        return False
+    if command == '':
+        return 0
+    else:
+        # Only accepts correct syntax
+        try:
+            i = command_lut.index(command)
+            print(command_lut[i])
+            execute_function(i)
+            return True
+        except:
+            send_error('Incorrect command syntax or non-existent command')
+            return False
 
     ''' Allows incorrect syntax (only searches for keywords)
     for item in command_lut:
@@ -255,7 +281,7 @@ def execute_function(func_number):
     if func_number == 0:
         eco_mode()
     if func_number == 1:
-        water_plant()
+        water_plant(2)
     if func_number == 2:
         SendShortMessage(phone_number, "Quitting the program...")
         power_down_hat(power_key)
@@ -283,13 +309,16 @@ def execute_function(func_number):
         get_water_level()
     if func_number == 12:
         get_data()
+    if func_number == 13:
+        SendShortMessage(phone_number, "I love you too!")
 
 
 def help_me():
     SendShortMessage(phone_number, '''Here is a lit of all the commands : eco_mode - turns off all non-watering functions, 
     water_plant - manual watering ahead of schedule, exit - stops all functionality''')
     SendShortMessage(phone_number, '''help - prints list of commands, set_plant_[dry,medium,wet] - 
-    sets plant type to dry/medium/wet, quit - kills program''')
+    sets plant type to dry/medium/wet, quit - kills program, get_[water_level/temp_hydration] - fetches sensor values''')
+    SendShortMessage(phone_number, '''get_data - fetches all sensor values at once''')
 
 
 def set_plant_dry():
@@ -339,7 +368,7 @@ def send_error(error_number):
         3: 'Failed to water plants - not enough water'
     }
     print(error_codes.get(error_number))
-    write_log(error_codes.get(error_number) + time.ctime())
+    write_log(error_codes.get(error_number))
     if error_number == 1 or error_number == 3:
         SendShortMessage(phone_number, error_codes.get(error_number))
 
@@ -347,30 +376,32 @@ def send_error(error_number):
 # ThingSpeak data transmission
 def send_to_Thingspeak():
     try:
-        # Read temperature
-        temperature = read_temp()
-        # Read humidity
-        humidity = read_humidity()
-        # Read water level
-        water_level = read_water_level()
-        data = {
-            "field1": temperature,
-            "field2": humidity,
-            "field3": water_level
-        }
-        response = requests.get(BASE_URL, params=data)
-        if response.status_code != 200:
-            print("Error - could not send data to ThingSpeak")
-        else:
-            print("Data transmission to ThingSpeak was successful")
-            time.sleep(1800)
+        while True:
+            # Read temperature
+            temp_c, temp_f = read_temp()
+            # Read humidity
+            humidity = read_humidity()
+            # Read water level
+            water_level = read_water_level()
+            data = {
+                "field1": water_level,
+                "field2": humidity,
+                "field3": temp_c,
+                "field4": temp_f
+            }
+            response = requests.get(BASE_URL, params=data)
+            if response.status_code != 200:
+                print("Error - could not send data to ThingSpeak")
+            else:
+                print("Data transmission to ThingSpeak was successful")
+                time.sleep(1800)
     except:
         send_error(2)
 
 
 def write_log(text):
     file = open("error_log.txt", "a")
-    file.write(text)
+    file.write(text + ' ' + str(time.ctime()) + '\n')
     file.close()
 
 
@@ -405,8 +436,11 @@ def power_down_hat(power_key):
 try:
     # Configure the GPIO pin as an input pin
     GPIO.setup(water_pin, GPIO.IN)
+    GPIO.setup(pump_pin, GPIO.OUT)
+    GPIO.setup(pump_pin, GPIO.HIGH)
 
     power_on_hat(power_key)
+
     t1 = threading.Thread(target=ReceiveShortMessage)
     t2 = threading.Thread(target=schedule_watering)
     t3 = threading.Thread(target=send_to_Thingspeak)
@@ -420,4 +454,5 @@ except:
     if ser is not None:
         ser.close()
 finally:
+    power_down_hat(power_key)
     GPIO.cleanup()
