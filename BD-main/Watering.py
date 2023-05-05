@@ -39,8 +39,7 @@ dry = [30, 45]
 medium = [40, 80]
 wet = [40, 90]
 
-# Define the minimum the and maximum delay between watering function activations
-min_delay = 1800  # 30 minutes
+# Define maximum delay for dry plants
 max_delay = 604800  # 7 days
 
 # ThingSpeak API parameters
@@ -151,7 +150,7 @@ def schedule_watering():
         file.close()
 
         if not os.path.exists('pot_type.txt'):
-            print("No pot type specified, assuming medium plant type")
+            print("No pot type specified, assuming small pot size")
             set_pot_small()
         file = open('pot_type.txt', 'r')
         pot_size = file.read()
