@@ -12,8 +12,8 @@ from adafruit_ads1x15.analog_in import AnalogIn
 
 i2c = busio.I2C(board.SCL, board.SDA)
 ads = ADS.ADS1115(i2c)
-chan_0 = AnalogIn(ads, ADS.P0)
-chan_1 = AnalogIn(ads, ADS.P1)
+chan_0 = AnalogIn(ads, ADS.P0) # Moisture sensor
+chan_1 = AnalogIn(ads, ADS.P1) # Temperature sensor
 
 # Define pins
 water_pin = 18
@@ -25,16 +25,15 @@ GPIO.setmode(GPIO.BCM)
 ser = serial.Serial("/dev/ttyS0", 115200)
 ser.flushInput()
 
-phone_number = '+37062920303'  # ********** change it to the phone number you want to text
+phone_number = '+37062920303'
 text_message = ''
 power_key = 6
 rec_buff = ''
 
 first_temp_check = True
-first_moist_check = True
 eco_mode = False
 
-# Define the hydration and temperature threshholds for the different plant types
+# Define the hydration and temperature thresholds for the different plant types
 dry = [30, 45]
 medium = [40, 80]
 wet = [40, 90]
@@ -78,7 +77,7 @@ def read_temp():
     sample /= 10
 
     temp_a = sample
-    temp_v = temp_a * .00005
+    temp_v = temp_a * .00005 # Convert analog to volts
     temp_c = round((temp_v * 220), 1)
     temp_f = round((temp_c * 1.8 + 32), 1)
 
@@ -157,16 +156,14 @@ def schedule_watering():
         file.close()
 
         if plant_type == '':
-            # SendShortMessage(phone_number, "No plant type specified, assuming medium plant type")
             set_plant_medium()
         if pot_size == '':
-            # SendShortMessage(phone_number, "No pot size specified, assuming small pot size")
             set_pot_small()
 
         # Calculate the recommended delay based on the current plant type and temperature level
         if plant_type == "dry":
             if hydration_level < dry[0]:
-                water_plant(4)  # 100 mk
+                water_plant(3)  # 75 ml
             delay = max_delay
         elif plant_type == "medium":
             if hydration_level < medium[0] and pot_size == 'small':
@@ -187,8 +184,8 @@ def schedule_watering():
 
         # Schedule the next watering function activation and return the recommended delay
         next_activation_time = time.time() + delay
-        while time.time() <= next_activation_time:
-            time.sleep(60)
+        while time.time() <= next_activation_time - 900:
+            time.sleep(3600)
 
 
 def send_at(command, back, timeout):
