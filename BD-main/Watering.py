@@ -36,7 +36,7 @@ eco_mode = False
 # Define the hydration and temperature thresholds for the different plant types
 dry = [30, 45]
 medium = [40, 80]
-wet = [40, 90]
+wet = [50, 90]
 
 # Define maximum delay for dry plants
 max_delay = 604800  # 7 days
